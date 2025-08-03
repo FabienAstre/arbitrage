@@ -1,59 +1,60 @@
-# arbitrage_dashboard.py
-
 import streamlit as st
 import requests
+import pandas as pd
 
-# === CONFIG ===
-PANCAKESWAP_API = "https://api.pancakeswap.info/api/v2/tokens/"
-BAKERYSWAP_API = "https://api.bakeryswap.org/api/tokens/"
+st.set_page_config(page_title="🔁 Crypto Arbitrage Dashboard", layout="wide")
+
+st.title("🔁 ETH & BSC Arbitrage Dashboard")
+st.markdown("This dashboard compares prices of popular tokens across Ethereum and Binance Smart Chain (BSC) to identify arbitrage opportunities.")
+
+# List of tokens to compare
 TOKENS = {
-    "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-    "USDT": "0x55d398326f99059fF775485246999027B3197955",
-    "BUSD": "0xe9e7cea3dedca5984780bafc599bd69add087d56"
+    "ETH": {"eth": "ethereum", "bsc": "binancecoin"},
+    "USDT": {"eth": "tether", "bsc": "tether"},
+    "BTC": {"eth": "bitcoin", "bsc": "bitcoin"},
+    "BNB": {"eth": "binancecoin", "bsc": "binancecoin"},
 }
 
-# === FUNCTIONS ===
-def get_token_price_pancake(address):
+def get_price(token_id, vs_currency="usd"):
+    url = f"https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": token_id,
+        "vs_currencies": vs_currency
+    }
     try:
-        r = requests.get(PANCAKESWAP_API + address)
-        data = r.json()
-        return float(data["data"]["price"])
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        return res.json().get(token_id, {}).get(vs_currency, None)
     except:
         return None
 
-def get_token_price_bakery(address):
-    try:
-        r = requests.get(BAKERYSWAP_API + address)
-        data = r.json()
-        return float(data["data"]["price"])
-    except:
-        return None
+def check_arbitrage():
+    rows = []
+    for symbol, chains in TOKENS.items():
+        eth_price = get_price(chains["eth"])
+        bsc_price = get_price(chains["bsc"])
 
-def calc_profit(buy_price, sell_price, amount):
-    return (sell_price - buy_price) * amount
+        if eth_price and bsc_price and eth_price != bsc_price:
+            spread = round(((eth_price - bsc_price) / bsc_price) * 100, 2)
+            better_on = "ETH" if eth_price < bsc_price else "BSC"
+            rows.append({
+                "Token": symbol,
+                "ETH Price (USD)": eth_price,
+                "BSC Price (USD)": bsc_price,
+                "Spread (%)": spread,
+                "Cheaper On": better_on
+            })
+    return pd.DataFrame(rows)
 
-# === UI ===
-st.title("🔁 BSC Arbitrage Dashboard")
-token_name = st.selectbox("Select token to compare", list(TOKENS.keys()))
-trade_amount = st.number_input("Amount to trade", min_value=0.1, value=10.0, step=0.1)
+with st.spinner("Fetching prices..."):
+    df = check_arbitrage()
 
-token_address = TOKENS[token_name]
-
-price_pancake = get_token_price_pancake(token_address)
-price_bakery = get_token_price_bakery(token_address)
-
-if price_pancake and price_bakery:
-    st.subheader(f"Live Prices for {token_name}")
-    st.metric("📈 PancakeSwap", f"${price_pancake:.4f}")
-    st.metric("📉 BakerySwap", f"${price_bakery:.4f}")
-
-    if price_pancake > price_bakery:
-        profit = calc_profit(price_bakery, price_pancake, trade_amount)
-        st.success(f"🟢 Arbitrage: Buy on BakerySwap, sell on PancakeSwap → Profit: ${profit:.2f}")
-    elif price_bakery > price_pancake:
-        profit = calc_profit(price_pancake, price_bakery, trade_amount)
-        st.success(f"🟢 Arbitrage: Buy on PancakeSwap, sell on BakerySwap → Profit: ${profit:.2f}")
-    else:
-        st.warning("No arbitrage opportunity detected.")
+if df.empty:
+    st.error("❌ No arbitrage opportunities found or failed to fetch prices.")
 else:
-    st.error("❌ Error fetching prices.")
+    st.success("✅ Arbitrage data loaded!")
+    st.dataframe(df.style.applymap(
+        lambda val: "background-color: #c6f6d5" if isinstance(val, str) and val in ["ETH", "BSC"] else ""
+    ), height=400)
+
+st.caption("Powered by CoinGecko API | Designed for educational use.")

@@ -1,58 +1,82 @@
 import streamlit as st
 import requests
 import pandas as pd
-import altair as alt
 
-# Page config and title
-st.set_page_config(page_title="🔁 Crypto Price Dashboard", layout="wide")
-st.title("🔁 Crypto Price Dashboard")
-st.markdown("Fetches live token prices from CoinGecko for popular tokens.")
+st.set_page_config(page_title="🔁 Real Arbitrage Dashboard", layout="wide")
+st.title("🔁 Real Arbitrage Opportunities: Ethereum vs BSC")
+st.markdown("Compare swap output amounts on 1inch API for Ethereum and Binance Smart Chain to find arbitrage.")
 
-# Tokens list with CoinGecko IDs
+# Tokens addresses (example: WETH and USDT)
 TOKENS = {
-    "Ethereum": "ethereum",
-    "Binance Coin": "binancecoin",
-    "Tether": "tether",
-    "Bitcoin": "bitcoin"
+    "WETH": {
+        "eth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "bsc": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8"
+    },
+    "USDT": {
+        "eth": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "bsc": "0x55d398326f99059fF775485246999027B3197955"
+    }
 }
 
-def get_price(token_id):
-    url = "https://api.coingecko.com/api/v3/simple/price"
+INPUT_AMOUNT = 1 * 10**18  # 1 WETH in wei (assuming 18 decimals)
+
+CHAIN_IDS = {
+    "Ethereum": 1,
+    "BSC": 56
+}
+
+def get_1inch_quote(chain_id, from_token, to_token, amount):
+    url = f"https://api.1inch.io/v5.0/{chain_id}/quote"
     params = {
-        "ids": token_id,
-        "vs_currencies": "usd"
+        "fromTokenAddress": from_token,
+        "toTokenAddress": to_token,
+        "amount": str(amount)
     }
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        price = response.json()[token_id]["usd"]
-        return price
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json()
+        to_token_amount = int(data['toTokenAmount'])
+        decimals = data['toToken']['decimals']
+        return to_token_amount / (10 ** decimals)
     except Exception as e:
-        st.error(f"Error fetching {token_id} price: {e}")
+        st.error(f"API error on chain {chain_id}: {e}")
         return None
 
-# Fetch prices and build data list
-prices_data = []
-for name, token_id in TOKENS.items():
-    price = get_price(token_id)
-    if price is not None:
-        prices_data.append({"Token": name, "Price (USD)": price})
+# Let user select token pair for swap
+st.sidebar.header("Swap Tokens")
+token_in = st.sidebar.selectbox("From Token", list(TOKENS.keys()), index=0)
+token_out = st.sidebar.selectbox("To Token", list(TOKENS.keys()), index=1)
 
-# Create dataframe
-df = pd.DataFrame(prices_data)
+if token_in == token_out:
+    st.warning("Please select two different tokens for arbitrage.")
+    st.stop()
 
-if df.empty:
-    st.error("❌ Could not retrieve any price data.")
+input_amount_display = st.sidebar.number_input("Input Amount", min_value=0.0001, value=1.0, step=0.1)
+
+input_amount_wei = int(input_amount_display * (10 ** 18))  # assume 18 decimals for simplicity
+
+# Fetch quotes from both chains
+eth_quote = get_1inch_quote(CHAIN_IDS["Ethereum"], TOKENS[token_in]["eth"], TOKENS[token_out]["eth"], input_amount_wei)
+bsc_quote = get_1inch_quote(CHAIN_IDS["BSC"], TOKENS[token_in]["bsc"], TOKENS[token_out]["bsc"], input_amount_wei)
+
+if eth_quote is None or bsc_quote is None:
+    st.error("Failed to fetch quotes from 1inch API.")
+    st.stop()
+
+# Show quotes
+st.subheader(f"Swap Quotes for {input_amount_display} {token_in}")
+st.write(f"On Ethereum: {eth_quote:.6f} {token_out}")
+st.write(f"On BSC: {bsc_quote:.6f} {token_out}")
+
+# Calculate arbitrage opportunity
+if eth_quote > bsc_quote:
+    profit = eth_quote - bsc_quote
+    spread_pct = (profit / bsc_quote) * 100
+    st.success(f"Buy on BSC, Sell on Ethereum → Potential Profit: {profit:.6f} {token_out} ({spread_pct:.2f}%)")
+elif bsc_quote > eth_quote:
+    profit = bsc_quote - eth_quote
+    spread_pct = (profit / eth_quote) * 100
+    st.success(f"Buy on Ethereum, Sell on BSC → Potential Profit: {profit:.6f} {token_out} ({spread_pct:.2f}%)")
 else:
-    # Show price table
-    st.subheader("📊 Live Token Prices")
-    st.dataframe(df.style.format({"Price (USD)": "${:,.2f}"}), use_container_width=True)
-
-    # Create bar chart of prices
-    chart = alt.Chart(df).mark_bar(color="#1f77b4").encode(
-        x=alt.X("Token:N", sort=None),
-        y=alt.Y("Price (USD):Q"),
-        tooltip=["Token", alt.Tooltip("Price (USD):Q", format="$,.2f")]
-    ).properties(title="Token Prices (USD)", width=700)
-
-    st.altair_chart(chart, use_container_width=True)
+    st.info("No arbitrage opportunity detected for selected token pair and amount.")
